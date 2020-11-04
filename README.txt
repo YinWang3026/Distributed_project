@@ -6,7 +6,7 @@ go run backend.go --listen :8091 --backend :8090,:8092
 go run backend.go --listen :8092 --backend :8090,:8091
 These commands should have the web servers running on localhost:8080 and :8081
 
-Command line arguments for frontend
+Command line arguments for frontend web server
 --listen addr:port
 --backend addr:port,addr:port...
 If no argument provided
