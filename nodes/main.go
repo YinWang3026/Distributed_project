@@ -39,8 +39,8 @@ type Items struct {
 
 // Raft Object
 type Raft struct {
-	State  string       //leader candidate follower
-	Log    []CommitInst //list of inst from Frontend
+	State  string       //leader, candidate, or follower
+	Log    []CommitInst //list of instructions from web serv to be commited
 	Term   int          //Election term
 	Quorum int          //What is needed for quorum
 	Time   int          //Time left to become an candidate
@@ -57,24 +57,29 @@ var itemMap = make(map[string]string)
 // Global Raft Object
 var raft = Raft{}
 
+// Functions
+
+// getRandomInteger - Returns a random integer between specified range
 func getRandomInteger() int {
 	//Random time from  5 - 15 secs for testing purposes, can be set longer
 	return rand.Intn(10) + 5
 }
 
+// addItem - Adds an item to map
 func addItem(key string, value string) error { //Adding item to map
 	if len(key) == 0 {
 		return errors.New("addItem: Key has length 0") //failed
 	}
 	_, ok := itemMap[key] // value, exists
-	if !ok {              //Item name must not exist
+	if !ok {              // Item name not used yet
 		itemMap[key] = value
 		return nil //success
 	}
 	return errors.New("addItem: Item exists") //failed
 }
 
-func deleteItem(key string) error { //Deleting item from map
+// deleteItem - Deletes an item from map
+func deleteItem(key string) error {
 	_, ok := itemMap[key]
 	if ok { //If item exist, delete
 		delete(itemMap, key)
@@ -83,7 +88,8 @@ func deleteItem(key string) error { //Deleting item from map
 	return errors.New("deleteItem: Item doesn't exist") //failed
 }
 
-func updateItem(oldKey string, key string, value string) error { //Updating item
+// updateItem - Updates a key/val pair in map
+func updateItem(oldKey string, key string, value string) error {
 	if len(key) == 0 { //New name must not be empty
 		return errors.New("updateItem: New key has length 0") //failed
 	}
@@ -96,27 +102,30 @@ func updateItem(oldKey string, key string, value string) error { //Updating item
 	return nil              //success
 }
 
-//Making calls to other backends, response is either ack or nack in bool
-func msgNodes(address string, inst Instruction) (bool, error) {
+// msgNode - Make requests to a given address
+func msgNode(address string, inst Instruction) (int, error) {
 	//Form connection
 	conn, err := net.Dial("tcp", address)
 	if err != nil {
-		// fmt.Println("Connection Error, Instruction Failed:", inst.Name)
-		return false, errors.New(fmt.Sprintf("msgNodes: Failed to dial: %q", address))
+		return 0, errors.New(fmt.Sprintf("msgNode: Failed to dial: %q", address))
 	}
 	defer conn.Close()
 
 	//Encodng and sending request
 	encoder := json.NewEncoder(conn)
-	encoder.Encode(inst)
+	err = encoder.Encode(inst)
+	if err != nil {
+		return 0, errors.New(fmt.Sprintf("msgNode: Encoding error, Instruction Failed: %q", inst.Name))
+	}
 
-	//Decoding and recieving message
-	var response bool
+	//Decoding response message
+	var response int
 	decoder := json.NewDecoder(conn)
 	err = decoder.Decode(&response)
 	if err != nil {
-		return false, errors.New(fmt.Sprintf("msgNodes: Decoding error, Instruction Failed: %q", inst.Name))
+		return 0, errors.New(fmt.Sprintf("msgNode: Decoding error, Instruction Failed: %q", inst.Name))
 	}
+
 	return response, nil
 }
 
@@ -125,8 +134,8 @@ func alive(backendAddr []string) {
 		if raft.State == "leader" { //Only leader can heartbeat other backends
 			inst := Instruction{From: "Backend", Name: "alive", Term: raft.Term, CILog: raft.Log} //Also passes Term number and Log just incase a node is out of sync
 			for _, addr := range backendAddr {
-				response, err := msgNodes(addr, inst) //Dialing
-				if err != nil || response == false {
+				response, err := msgNode(addr, inst) //Dialing
+				if err != nil || response == 0 {
 					fmt.Println("Detected failure on localhost", addr, "at", time.Now().UTC())
 				}
 				time.Sleep(1 * time.Second) // Pause 1 second on making each call
@@ -155,8 +164,8 @@ func raftTimer(backendAddr []string) {
 			votes := 1 //Voted for self
 			for _, addr := range backendAddr {
 				// Going around the room, asking for votes
-				response, _ := msgNodes(addr, inst)
-				if response == true {
+				response, _ := msgNode(addr, inst)
+				if response == 1 {
 					votes = votes + 1
 				}
 			}
@@ -213,27 +222,45 @@ func webServerInstHandler(inst *Instruction, backendAddr []string, encoder *json
 		//Comit on quorum
 		//Tell followers to commit
 		//Respond to frontend
-		c := CommitInst{Name: inst.Name, Params: inst.Params}      //Parse the incoming params
-		x := Instruction{From: "Backend", Name: "addToLog", CI: c} //Making inst to other backend
+
+		// Create the commit instruction
+		ctInst := CommitInst{Name: inst.Name, Params: inst.Params}
+		// Send commit instruction to all nodes
+		requestInst := Instruction{From: "Backend", Name: "addToLog", CI: ctInst}
 		votes := 1
 		for _, val := range backendAddr {
-			response, _ := msgNodes(val, x) //Telling other back end to append inst
-			if response == true {
+			response, _ := msgNode(val, requestInst) //Telling other back end to append inst
+			if response == 1 {
 				votes = votes + 1
 			}
 		}
-		if votes >= raft.Quorum { //Upon quorum
-			//Stack last inst in, first out
-			raft.Log = append(raft.Log, c) //Add to log
-			i := raft.Log[len(raft.Log)-1] //Getting last item
-			result := mapEditor(i)         //Commit it
-			encoder.Encode(1)              //Respond to front end
-			//Telling other backends to commit
+		// Upon quorum commit the instruction
+		if votes >= raft.Quorum {
+			// Adding commit inst to Log
+			raft.Log = append(raft.Log, ctInst)
+
+			// Committing
+			err := mapEditor(ctInst)
+			if err != nil {
+				// Failed to make the commit, abort
+				fmt.Fprintf(os.Stderr, err.Error())
+
+				// TODO: All other nodes need to delete the commit from log
+				raft.Log = raft.Log[:len(raft.Log)-1] // Removing the failed commit from log
+				encoder.Encode(0)                     // Tell webserv instruction failed
+				return
+			}
+
+			// Respond to webserver with success
+			encoder.Encode(1)
+
+			// Request other nodes to commit
 			x := Instruction{From: "Backend", Name: "commit"}
 			for _, val := range backendAddr {
-				response, _ := msgNodes(val, x) //Telling other back end to commit
-				if response == false {
+				response, _ := msgNode(val, x) //Telling other back end to commit
+				if response == 0 {
 					fmt.Println("Failed to commmit:", val)
+					// TODO: ALl other ndoes need to re-sync with leader
 				}
 			}
 		} else { //No quorom, tell front end operation failed
@@ -242,89 +269,101 @@ func webServerInstHandler(inst *Instruction, backendAddr []string, encoder *json
 	}
 }
 
+func nodeInstHandler(inst *Instruction, backendAddr []string, encoder *json.Encoder) {
+	//Reset timer on any backend messages
+	raft.Time = getRandomInteger()
+	if inst.Name == "voteForMe" && raft.State != "leader" {
+		//Increase term and vote
+		raftVoteLock.Lock()
+		i := inst.Term
+		v := false //Did not vote
+		for _, val := range raft.Voted {
+			if i == val {
+				v = true //voted already
+			}
+		}
+		if v == false {
+			//set term to candidate
+			raft.Term = i
+			raft.Voted = append(raft.Voted, i)
+			encoder.Encode(1) //Vote 1
+		} else {
+			encoder.Encode(0) //Voted already
+		}
+		raftVoteLock.Unlock()
+
+	} else if inst.Name == "addToLog" {
+		//Add to log
+		raft.Log = append(raft.Log, inst.CI)
+		encoder.Encode(1)
+	} else if inst.Name == "rmFromLog" {
+		if len(raft.Log) > 0 {
+			raft.Log = raft.Log[:len(raft.Log)-1]
+			encoder.Encode(1)
+		} else {
+			encoder.Encode(0)
+		}
+	} else if inst.Name == "commit" {
+		//Commit the last entry
+		inst := raft.Log[len(raft.Log)-1] //Getting last item
+		err := mapEditor(inst)            //Commit it
+		if err != nil {
+			fmt.Println(err.Error())
+			encoder.Encode(0)
+		} else {
+			encoder.Encode(1)
+		}
+	} else if inst.Name == "alive" { //meaning there is a leader..
+		if (raft.State == "leader" && raft.Term < inst.Term) || raft.State == "candidate" {
+			raft.State = "follower"        //I am your follower
+			raft.Log = inst.CILog          //Copying your log
+			raft.Term = inst.Term          //and term
+			initState()                    //Resetting data
+			for _, val := range raft.Log { //Apply each instructions
+				_ = mapEditor(val)
+			}
+		} else if raft.State == "follower" && raft.Term < inst.Term { //Outdated follower
+			raft.Log = inst.CILog
+			raft.Term = inst.Term
+			initState()
+			for _, val := range raft.Log {
+				_ = mapEditor(val)
+			}
+		}
+		// Any how, respond with I am alive
+		encoder.Encode(1)
+	}
+}
+
 func requestHandler(conn net.Conn, backendAddr []string) {
 	// Defer the close
 	defer conn.Close()
+
+	//Encoder for sending response
+	encoder := json.NewEncoder(conn)
 
 	//Decoder for incoming instruction
 	var inst Instruction
 	decoder := json.NewDecoder(conn)
 	err := decoder.Decode(&inst)
 	if err != nil {
-		fmt.Println("Handler: Decoder error")
+		encoder.Encode(0)
+		fmt.Fprintf(os.Stderr, "Handler: %s\n", err.Error())
 		return
 	}
 	fmt.Fprintf(os.Stderr, "Conn[%q], From[%q], InstName[%q]\n", conn.RemoteAddr().String(), inst.From, inst.Name)
 
-	//Encoder for sending response
-	encoder := json.NewEncoder(conn)
-
+	// Case switch
 	if inst.From == "Frontend" && raft.State == "leader" {
 		// Webserver communicates with leader node only
 		webServerInstHandler(&inst, backendAddr, encoder)
-
 	} else if inst.From == "Backend" {
-		//Reset timer on any backend messages
-		raft.Time = getRandomInteger()
-		if inst.Name == "voteForMe" && raft.State != "leader" {
-			//Increase term and vote
-			raftVoteLock.Lock()
-			i := inst.Term
-			v := false //Did not vote
-			for _, val := range raft.Voted {
-				if i == val {
-					v = true //voted already
-				}
-			}
-			if v == false {
-				//set term to candidate
-				raft.Term = i
-				raft.Voted = append(raft.Voted, i)
-				encoder.Encode(1) //Vote 1
-			} else {
-				encoder.Encode(0) //Voted already
-			}
-			raftVoteLock.Unlock()
-
-		} else if inst.Name == "addToLog" {
-			//Add to log
-			raft.Log = append(raft.Log, inst.CI)
-			encoder.Encode(1)
-		} else if inst.Name == "commit" {
-			//Commit the last entry
-			i := raft.Log[len(raft.Log)-1] //Getting last item
-			itemMapmutex.Lock()
-			_ = mapEditor(i) //Commit it
-			itemMapmutex.Unlock()
-			encoder.Encode(1)
-		} else if inst.Name == "alive" { //meaning there is a leader..
-			if (raft.State == "leader" && raft.Term < inst.Term) || raft.State == "candidate" {
-				raft.State = "follower" //I am your follower
-				raft.Log = inst.CILog   //Copying your log
-				raft.Term = inst.Term   //and term
-				itemMapmutex.Lock()
-				initState()                    //Resetting data
-				for _, val := range raft.Log { //Apply each instructions
-					_ = mapEditor(val)
-				}
-				itemMapmutex.Unlock()
-			} else if raft.State == "follower" && raft.Term < inst.Term { //Outdated follower
-				raft.Log = inst.CILog
-				raft.Term = inst.Term
-				itemMapmutex.Lock()
-				initState()
-				for _, val := range raft.Log {
-					_ = mapEditor(val)
-				}
-				itemMapmutex.Unlock()
-			}
-			// Any how, respond with I am alive
-			encoder.Encode(1)
-		}
+		// Nodes
+		nodeInstHandler(&inst, backendAddr, encoder)
 	} else {
+		// Invalid sender
 		encoder.Encode(0)
 	}
-	// fmt.Fprintln(os.Stderr, "connection ended")
 	fmt.Fprintln(os.Stderr, "connection ended: ", conn.RemoteAddr().String())
 }
 
