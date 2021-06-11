@@ -13,8 +13,8 @@ import (
 
 //Items object export for JSON encoding/decoding
 type Items struct {
-	Name string
-	Desc string
+	Name string `json:"name"`
+	Desc string `json:"desc"`
 }
 
 //Instruction obj export
