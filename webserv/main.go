@@ -18,10 +18,12 @@ type Items struct {
 }
 
 //Instruction obj export
-type Instruction struct {
-	From   string
-	Name   string
-	Params []string
+type Request struct {
+	From   string `json:"from"`
+	Name   string `json:"name"`
+	Key    string `json:"key"`
+	Value  string `json:"value"`
+	OldKey string `json:"oldkey"`
 }
 
 func request(dial string, inst Instruction) int {

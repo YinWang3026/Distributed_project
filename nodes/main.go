@@ -195,7 +195,7 @@ func raftTimer() {
 // checkingLeader - A thread function, for debugging purposes
 func checkingLeader() {
 	for {
-		fmt.Println("I am", raft.State, " Time:", raft.Time, "Election Term:", raft.Term)
+		fmt.Println("I am", raft.State, "Time:", raft.Time, "Election Term:", raft.Term)
 		fmt.Println(itemMap)
 		time.Sleep(1 * time.Second)
 	}
