@@ -35,90 +35,82 @@ type Commitment struct {
 	OldKey string
 }
 
-// Entries in the form, shared with web server
-type Items struct {
-	Name string `json:"name"`
-	Desc string `json:"desc"`
-}
-
 // Raft Object
 type Raft struct {
-	State      string           //Leader, candidate, or follower
-	Term       int              //Election term
-	Quorum     int              //What is needed for quorum
-	Time       int              //Time left to become an candidate
-	VotedTerms map[int]struct{} //Record of voted term numbers, map string to nothing, a way to implement set
-	Log        []Commitment     //List of instructions from web serv that has been committed
+	State      string           // Leader, candidate, or follower
+	Term       int              // Election term
+	Quorum     int              // What is needed for quorum
+	Time       int              // Time left to become an candidate
+	VotedTerms map[int]struct{} // Record of voted term numbers, map string to nothing, a way to implement set
+	Log        []Commitment     // List of instructions from web serv that has been committed
 }
 
 // Globals
-var itemMapmutex = sync.RWMutex{}     //itemMap mutex
-var raftVoteLock = sync.Mutex{}       //vote mutex
-var itemMap = make(map[string]string) //itemMap
-var raft = Raft{}                     //Raft object
-var backendAddrList []string
+var itemMapmutex = sync.RWMutex{}     // itemMap mutex
+var raftVoteLock = sync.Mutex{}       // vote mutex
+var itemMap = make(map[string]string) // itemMap
+var raft = Raft{}                     // Raft object
+var nodeAddrList []string          // List of node addresses
 
 // getRandomInteger - Returns a random integer between specified range
 func getRandomInteger() int {
-	//Random time from  5 - 15 secs for testing purposes, can be set longer
+	// Random time from  5 - 15 secs for testing purposes, can be set longer
 	return rand.Intn(10) + 5
 }
 
 // addItem - Adds an item to map
-func addItem(key string, value string) error { //Adding item to map
+func addItem(key string, value string) error { // Adding item to map
 	if len(key) == 0 {
-		return errors.New("addItem: Key has length 0") //failed
+		return errors.New("addItem: Key has length 0") // failed
 	}
-	_, ok := itemMap[key] //value, exists
-	if !ok {              //item name not used yet
+	_, ok := itemMap[key] // value, exists
+	if !ok {              // item name not used yet
 		itemMap[key] = value
-		return nil //success
+		return nil // success
 	}
-	return errors.New("addItem: Item exists") //failed
+	return errors.New("addItem: Item exists") // failed
 }
 
 // deleteItem - Deletes an item from map
 func deleteItem(key string) error {
 	_, ok := itemMap[key]
-	if ok { //If item exist, delete
+	if ok { // If item exist, delete
 		delete(itemMap, key)
-		return nil //success
+		return nil // success
 	}
-	return errors.New("deleteItem: Item doesn't exist") //failed
+	return errors.New("deleteItem: Item doesn't exist") // failed
 }
 
 // updateItem - Updates a key/val pair in map
 func updateItem(oldKey string, key string, value string) error {
-	if len(key) == 0 { //New name must not be empty
-		return errors.New("updateItem: New key has length 0") //failed
+	if len(key) == 0 { // New name must not be empty
+		return errors.New("updateItem: New key has length 0") // failed
 	}
 	_, ok := itemMap[key]
 	if ok && key != oldKey { //Name cannot be taken
-		return errors.New("updateItem: New key is taken") //failed
+		return errors.New("updateItem: New key is taken") // failed
 	}
-	delete(itemMap, oldKey) //Remove the item
-	itemMap[key] = value    //Add the updated item
-	return nil              //success
+	delete(itemMap, oldKey) // Remove the item
+	itemMap[key] = value    // Add the updated item
+	return nil              // success
 }
 
 // msgNode - Make requests to a given address
 func msgNode(address string, req Request) int {
-	//Form connection
+	// Form connection
 	conn, err := net.Dial("tcp", address)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "msgNode: Failed to dial:", address)
 		return 0
 	}
 	defer conn.Close()
-
-	//Encodng and sending request
+	// Encodng and sending request
 	err = json.NewEncoder(conn).Encode(req)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "msgNode: Encoding error, Request Failed:", req.Name)
 		return 0
 	}
-
-	//Decoding response message
+	// Decoding response message
 	var response int = 0
 	err = json.NewDecoder(conn).Decode(&response)
 	if err != nil {
@@ -136,7 +128,7 @@ func alive() {
 			// Only leader needs to heartbeat other nodes
 			req := Request{From: "node", Name: "alive", Term: raft.Term}
 			// Also passes Term number incase a node is out of sync
-			for _, addr := range backendAddrList {
+			for _, addr := range nodeAddrList {
 				response := msgNode(addr, req) //Dialing
 				if response == 0 {
 					// Failed
@@ -175,7 +167,7 @@ func raftTimer() {
 			raft.Term = raft.Term + 1 //Increase term
 			//Asking for votes
 			votes := 1 //Voted for self
-			for _, addr := range backendAddrList {
+			for _, addr := range nodeAddrList {
 				// Going around the room, asking for votes
 				response := msgNode(addr, req)
 				if response == 1 {
@@ -223,34 +215,26 @@ func webHandler(req *Request, encoder *json.Encoder) {
 		encoder.Encode(1)
 	} else if req.Name == "itemMap" {
 		// Request all items in the item map
-		list := []Items{}    //JSON object to send
-		itemMapmutex.RLock() //Read lock
-		for key, val := range itemMap {
-			list = append(list, Items{Name: key, Desc: val})
-		}
-		itemMapmutex.RUnlock() //Read unlock
-		encoder.Encode(list)   //Responses to frontend
+		itemMapmutex.RLock()    // Read lock
+		encoder.Encode(itemMap) // Encode the map and send it
+		itemMapmutex.RUnlock()  // Read unlock
 	} else if req.Name == "add" || req.Name == "delete" || req.Name == "update" {
 		// Add to log, Send commit messages, Comit on quorum, Tell followers to commit, Respond to web server
-
 		// Create the commitment
 		commit := Commitment{Name: req.Name, Key: req.Key, Value: req.Value, OldKey: req.OldKey}
-
-		// Adding commit inst to Log
+		// Adding commit to Log
 		raft.Log = append(raft.Log, commit)
-
 		// Send commit req to all nodes
 		nodeReq := Request{From: "node", Name: "addToLog", CI: commit}
 		votes := 1
 		voters := make([]string, 0)
-		for _, addr := range backendAddrList {
+		for _, addr := range nodeAddrList {
 			response := msgNode(addr, nodeReq) //Telling other back end to append inst
 			if response == 1 {
 				votes += 1
 				voters = append(voters, addr)
 			}
 		}
-
 		// Upon quorum commit the instruction
 		if votes >= raft.Quorum {
 			// Committing
@@ -258,44 +242,29 @@ func webHandler(req *Request, encoder *json.Encoder) {
 			if err != nil {
 				// Failed to make the commit, abort
 				fmt.Fprintf(os.Stderr, err.Error())
-
-				// Removing the failed commit from log
-				raft.Log = raft.Log[:len(raft.Log)-1]
-
-				// Alerting voters to remove from log
-				req := Request{From: "node", Name: "rmFromLog"}
+				raft.Log = raft.Log[:len(raft.Log)-1]           // Removing the failed commit from log
+				req := Request{From: "node", Name: "rmFromLog"} // Requesting voters to remove from log
 				for _, addr := range voters {
-					_ = msgNode(addr, req)
+					msgNode(addr, req)
 				}
-
-				// Tell webserv instruction failed
-				encoder.Encode(0)
+				encoder.Encode(0) // Respond to web serv with fail
 				return
 			}
-
 			// Respond to webserver with success
 			encoder.Encode(1)
-
 			// Request other nodes to commit
 			req := Request{From: "node", Name: "commit"}
-			for _, addr := range backendAddrList {
-				response := msgNode(addr, req)
-				if response == 0 {
-					fmt.Fprintln(os.Stderr, "Failed to commmit:", addr)
-					// TODO: ALl other ndoes need to re-sync with leader
-				}
+			for _, addr := range nodeAddrList {
+				msgNode(addr, req)
 			}
 		} else {
-			// No quorum
-			// Removing the failed commit from log
+			// No quorum - Removing commit from log
 			raft.Log = raft.Log[:len(raft.Log)-1]
-			// Alerting voters to remove from log
 			req := Request{From: "node", Name: "rmFromLog"}
 			for _, addr := range voters {
-				_ = msgNode(addr, req)
+				msgNode(addr, req)
 			}
-			// Inst failed
-			encoder.Encode(0)
+			encoder.Encode(0) // Respond to web serv with fail
 		}
 	} else {
 		// Unknown request
@@ -365,7 +334,7 @@ func nodeHandler(req *Request, encoder *json.Encoder) {
 		raft.Term = req.Term
 		initState()
 		for _, commit := range raft.Log {
-			_ = mapEditor(commit) // Better have no errors ...
+			mapEditor(commit) // Better have no errors ...
 		}
 		encoder.Encode(1)
 	} else {
@@ -392,7 +361,7 @@ func requestHandler(conn net.Conn) {
 		return
 	}
 
-	fmt.Fprintf(os.Stderr, "Conn[%q], From[%q], InstName[%q]\n", conn.RemoteAddr().String(), req.From, req.Name)
+	fmt.Printf("Conn[%q], From[%q], InstName[%q]\n", conn.RemoteAddr().String(), req.From, req.Name)
 
 	// Mux
 	if req.From == "web" && raft.State == "leader" {
@@ -406,7 +375,7 @@ func requestHandler(conn net.Conn) {
 		encoder.Encode(0)
 	}
 
-	fmt.Fprintln(os.Stderr, "connection ended:", conn.RemoteAddr().String())
+	fmt.Println("connection ended:", conn.RemoteAddr().String())
 }
 
 // initState - Adding test entries to log and map
@@ -434,14 +403,14 @@ func main() {
 	}
 
 	// A list of other nodes
-	backendAddrList = strings.Split(*dialPtr, ",")
+	nodeAddrList = strings.Split(*dialPtr, ",")
 
 	// Initializing raft object
 	rand.Seed(time.Now().UnixNano())
 	raft.State = "follower"
 	raft.Log = make([]Commitment, 0)
 	raft.Term = 0
-	raft.Quorum = (len(backendAddrList)+1)/2 + 1
+	raft.Quorum = (len(nodeAddrList)+1)/2 + 1
 	raft.Time = getRandomInteger()
 
 	// Adding test values to Map
@@ -457,6 +426,7 @@ func main() {
 	if err != nil {
 		log.Fatal("Node cannot bind to socket.")
 	}
+	defer ln.Close()
 	fmt.Println("Node starting ...")
 	for {
 		// Accepting requests
@@ -465,7 +435,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, "Failed to accept:", conn.RemoteAddr().String())
 			continue
 		}
-		fmt.Fprintln(os.Stderr, "Got a connection from:", conn.RemoteAddr().String())
+		fmt.Println("Got a connection from:", conn.RemoteAddr().String())
 		// Handler - When accepted a connection, pass it into a thread
 		go requestHandler(conn)
 	}
