@@ -50,7 +50,7 @@ var itemMapmutex = sync.RWMutex{}     // itemMap mutex
 var raftVoteLock = sync.Mutex{}       // vote mutex
 var itemMap = make(map[string]string) // itemMap
 var raft = Raft{}                     // Raft object
-var nodeAddrList []string          // List of node addresses
+var nodeAddrList []string             // List of node addresses
 
 // getRandomInteger - Returns a random integer between specified range
 func getRandomInteger() int {
@@ -254,7 +254,7 @@ func webHandler(req *Request, encoder *json.Encoder) {
 			encoder.Encode(1)
 			// Request other nodes to commit
 			req := Request{From: "node", Name: "commit"}
-			for _, addr := range nodeAddrList {
+			for _, addr := range voters {
 				msgNode(addr, req)
 			}
 		} else {
@@ -409,6 +409,7 @@ func main() {
 	rand.Seed(time.Now().UnixNano())
 	raft.State = "follower"
 	raft.Log = make([]Commitment, 0)
+	raft.VotedTerms = make(map[int]struct{})
 	raft.Term = 0
 	raft.Quorum = (len(nodeAddrList)+1)/2 + 1
 	raft.Time = getRandomInteger()

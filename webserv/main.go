@@ -5,19 +5,14 @@ import (
 	"flag"
 	"fmt"
 	"net"
+
+	// "net/http"
 	"os"
 	"strings"
 	"time"
-	// "github.com/kataras/iris"
 )
 
-//Items object export for JSON encoding/decoding
-type Items struct {
-	Name string `json:"name"`
-	Desc string `json:"desc"`
-}
-
-//Instruction obj export
+// Request obj
 type Request struct {
 	From   string `json:"from"`
 	Name   string `json:"name"`
@@ -26,64 +21,69 @@ type Request struct {
 	OldKey string `json:"oldkey"`
 }
 
-func request(dial string, inst Instruction) int {
+// Globals
+var itemMap = make(map[string]string) // itemMap
+var nodeAddrList []string             // List of node addresses
+var leaderAddr string                 // Address of leader node
+
+// msgNode - sends request to given address, returns success/fail
+func msgNode(address string, req Request) int {
 	//Form connection
-	conn, err := net.Dial("tcp", dial)
+	conn, err := net.Dial("tcp", address)
 	if err != nil {
-		fmt.Println("Connection Error, Instruction Failed:", inst.Name)
-		return 0 //Failed
+		fmt.Fprintln(os.Stderr, "msgNode: Failed to dial:", address)
+		return 0
 	}
 	defer conn.Close()
 	//Encodng and sending message
-	encoder := json.NewEncoder(conn)
-	encoder.Encode(inst)
+	err = json.NewEncoder(conn).Encode(req)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "msgNode: Encoding error, Request Failed:", req.Name)
+		return 0
+	}
 	//Decoding and recieving message
-	decoder := json.NewDecoder(conn)
-	var x int
-	derr := decoder.Decode(&x)
-	if derr != nil {
-		fmt.Println("Decoding error, Instruction Failed:", inst.Name)
-		return 0 //Failed
+	var response int = 0
+	err = json.NewDecoder(conn).Decode(&response)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "msgNode: Decoding error, Request Failed:", req.Name)
+		return 0
 	}
-	return x //1 for success, 0 for fail
+	// 0 = Fail, 1 = Ok
+	return response
 }
 
-func alive(backendAddr []string, leaderAddr *string) {
-	x := Instruction{From: "Frontend", Name: "leader", Params: []string{""}}
+// alive - Heart beat to leader node
+func alive() {
+	req := Request{From: "web", Name: "leader"}
 	for {
-		fmt.Println("Leader addr:", *leaderAddr)
-		result := request(*leaderAddr, x) //Dialing
-		if result == 1 {
-			//fmt.Println("Connection Ok")
-			time.Sleep(1 * time.Second) //Dialing once every 3 seconds
-		} else {
-			fmt.Println("Detected failure on localhost", *leaderAddr, "at", time.Now().UTC()) //Leader fails
-			findingLeader(backendAddr, leaderAddr)                                            //Find new leader
-			time.Sleep(1 * time.Second)
+		fmt.Println("Leader addr:", leaderAddr)
+		result := msgNode(leaderAddr, req) //Dialing
+		if result != 1 {
+			//Leader fails
+			fmt.Printf("Detected failure on leaderAddr[%q] at [%q]", leaderAddr, time.Now().UTC().String())
+			//Find new leader
+			req2 := Request{From: "web", Name: "leader"}
+			for _, addr := range nodeAddrList { //Loops through backends and asks are you leader
+				result := msgNode(addr, req2)
+				if result == 1 {
+					leaderAddr = addr
+				}
+			}
 		}
-	}
-}
-
-func findingLeader(backendAddr []string, leaderAddr *string) {
-	x := Instruction{From: "Frontend", Name: "leader", Params: []string{""}}
-	for _, val := range backendAddr { //Loops through backends and asks are you leader
-		result := request(val, x)
-		if result == 1 {
-			*leaderAddr = val
-		}
+		time.Sleep(3 * time.Second) //Dialing once every 3 seconds
 	}
 }
 
 func main() {
 	//Getting command line arguments
 	listenPtr := flag.String("listen", ":8080", "listen address")
-	dialPtr := flag.String("backend", ":8090,:8091,:8092", "dial address")
+	dialPtr := flag.String("nodes", ":8090,:8091,:8092", "node address")
 	flag.Parse()
-	backendAddr := strings.Split(*dialPtr, ",")
-	leaderAddr := "0000"
+	nodeAddrList = strings.Split(*dialPtr, ",")
+	leaderAddr = "0000"
 
 	//Finding backend leader and setting leaderAddr to it.
-	go alive(backendAddr, &leaderAddr)
+	go alive()
 
 	app := iris.Default()
 
@@ -98,7 +98,7 @@ func main() {
 		}
 		defer conn.Close()
 		//Encodng and sending message
-		x := Instruction{From: "Frontend", Name: "itemMap", Params: []string{""}}
+		x := Request{From: "Frontend", Name: "itemMap", Params: []string{""}}
 		encoder := json.NewEncoder(conn)
 		encoder.Encode(x)
 		//Decoding and recieving message
@@ -126,9 +126,9 @@ func main() {
 	// Method:   POST
 	// Resource: http://localhost:8080/add
 	app.Post("/add", func(ctx iris.Context) {
-		form := ctx.FormValues()                                                                            //Reading form values
-		x := Instruction{From: "Frontend", Name: "add", Params: []string{form["item"][0], form["desc"][0]}} //Making instruction
-		result := request(leaderAddr, x)                                                                    //Calling backend
+		form := ctx.FormValues()                                                                        //Reading form values
+		x := Request{From: "Frontend", Name: "add", Params: []string{form["item"][0], form["desc"][0]}} //Making instruction
+		result := request(leaderAddr, x)                                                                //Calling backend
 		fmt.Println(x)
 		if result == 1 {
 			ctx.HTML("<p>Add Complete<p>")
@@ -142,8 +142,8 @@ func main() {
 	// Method:   Post
 	// Resource: http://localhost:8080/edit
 	app.Post("/edit", func(ctx iris.Context) {
-		form := ctx.FormValues()                                                                                                   //Reading form values
-		x := Instruction{From: "Frontend", Name: "update", Params: []string{form["oriItem"][0], form["item"][0], form["desc"][0]}} //Making instruction
+		form := ctx.FormValues()                                                                                               //Reading form values
+		x := Request{From: "Frontend", Name: "update", Params: []string{form["oriItem"][0], form["item"][0], form["desc"][0]}} //Making instruction
 		fmt.Println(x)
 		result := request(leaderAddr, x) //Calling backend
 		if result == 1 {
@@ -158,7 +158,7 @@ func main() {
 	// Resource: http://localhost:8080/delete
 	app.Post("/delete", func(ctx iris.Context) {
 		form := ctx.FormValues()
-		x := Instruction{From: "Frontend", Name: "delete", Params: []string{form["item"][0]}}
+		x := Request{From: "Frontend", Name: "delete", Params: []string{form["item"][0]}}
 		result := request(leaderAddr, x)
 		if result == 1 {
 			ctx.HTML("<p>Delete Complete<p>")
