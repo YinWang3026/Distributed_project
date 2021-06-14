@@ -1,12 +1,12 @@
 package main
 
 import (
-	"encoding/json"
-	"flag"
+	"encoding/json" // Marshal, unmarshal, encoding, decoding,
+	"flag"          // Cmd line argument parsing
 	"fmt"
-	"net"
-
-	// "net/http"
+	"log"      // log.Fatal()
+	"net"      // TCP
+	"net/http" // Http request handlers
 	"os"
 	"strings"
 	"time"
@@ -22,9 +22,8 @@ type Request struct {
 }
 
 // Globals
-var itemMap = make(map[string]string) // itemMap
-var nodeAddrList []string             // List of node addresses
-var leaderAddr string                 // Address of leader node
+var nodeAddrList []string // List of node addresses
+var leaderAddr string     // Address of leader node
 
 // msgNode - sends request to given address, returns success/fail
 func msgNode(address string, req Request) int {
@@ -74,98 +73,104 @@ func alive() {
 	}
 }
 
+// Method:   GET
+// Resource: http://localhost:8080/
+func rootHandler(w http.ResponseWriter, r *http.Request) {
+	//Dial connection
+	conn, err := net.Dial("tcp", leaderAddr)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer conn.Close()
+	//Encodng and sending message
+	req := Request{From: "web", Name: "itemMap"}
+	err = json.NewEncoder(conn).Encode(req)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	//Decoding and recieving message
+	var itemMap map[string]string // itemMap
+	err = json.NewDecoder(conn).Decode(&itemMap)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	//HTML
+	ctx.HTML("<p>List of items</p>")
+	ctx.HTML("<form action='/add' method='post'><input type='text' name='item' placeholder='Name of item'><input type='text' name='desc' placeholder='Description of item'>")
+	ctx.HTML("<input type='submit' value='Add'></form>")
+	//Displaying the items
+	for key, val := range itemMap {
+		ctx.HTML("<form method='post'><input type='text' name='oriItem' style='display:none;' readonly value=" + key + "><input type='text' name='item' value=" + key + "><input type='text' name='desc' value=" + val + ">")
+		ctx.HTML("<input type='submit' formaction='/edit' value='Edit'><input type='submit' formaction='/delete' value='Delete'></form>")
+		//ctx.WriteString("<pre>Item: " + key + "	Description: " + val + "	<a href='/edit/{" + key + "}/{" + val + "}'>Edit</a>	<a href='/delete/{" + key + "}'>Delete</a></pre>")
+	}
+}
+
+// Method:   POST
+// Resource: http://localhost:8080/add
+func addHandler(w http.ResponseWriter, r *http.Request) {
+	req := Request{From: "web", Name: "add", Key: r.FormValue("key"), Value: r.FormValue("value")}
+	result := msgNode(leaderAddr, req)
+	fmt.Println(req)
+	if result == 1 {
+		ctx.HTML("<p>Add Complete<p>")
+	} else {
+		ctx.HTML("<p>Add Failed. Item name exist or item name empty<p>")
+	}
+	ctx.HTML("<a href='/'>Return to main page<a>")
+}
+
+// Method:   POST
+// Resource: http://localhost:8080/delete
+func deleteHandler(w http.ResponseWriter, r *http.Request) {
+	req := Request{From: "web", Name: "delete", Key: r.FormValue("key")}
+	result := msgNode(leaderAddr, req)
+	fmt.Println(req)
+	if result == 1 {
+		ctx.HTML("<p>Delete Complete<p>")
+	} else {
+		ctx.HTML("<p>Delete Failed.<p>")
+	}
+	ctx.HTML("<a href='/'>Return to main page<a>")
+}
+
+// Method:   Post
+// Resource: http://localhost:8080/update
+func updateHandler(w http.ResponseWriter, r *http.Request) {
+	req := Request{From: "web", Name: "update", Key: r.FormValue("key"), Value: r.FormValue("value"), OldKey: r.FormValue("oldkey")}
+	fmt.Println(req)
+	result := msgNode(leaderAddr, req)
+	if result == 1 {
+		ctx.HTML("<p>Edit Complete<p>")
+	} else {
+		ctx.HTML("<p>Edit Failed. Item name exist or item name empty<p>")
+	}
+	ctx.HTML("<a href='/'>Return to main page<a>")
+}
+
 func main() {
-	//Getting command line arguments
+	// Getting command line arguments
 	listenPtr := flag.String("listen", ":8080", "listen address")
 	dialPtr := flag.String("nodes", ":8090,:8091,:8092", "node address")
 	flag.Parse()
+
+	// Initialzing globals
 	nodeAddrList = strings.Split(*dialPtr, ",")
 	leaderAddr = "0000"
 
-	//Finding backend leader and setting leaderAddr to it.
+	// Finding node leader, and heart beat the leader address
 	go alive()
 
-	app := iris.Default()
+	http.HandleFunc("/", rootHandler)
+	http.HandleFunc("/add", addHandler)
+	http.HandleFunc("/update", updateHandler)
+	http.HandleFunc("/delete/", deleteHandler)
 
-	// Method:   GET
-	// Resource: http://localhost:8080/
-	app.Handle("GET", "/", func(ctx iris.Context) {
-		//Dial connection
-		conn, err := net.Dial("tcp", leaderAddr)
-		if err != nil {
-			fmt.Printf("Connection error")
-			os.Exit(1)
-		}
-		defer conn.Close()
-		//Encodng and sending message
-		x := Request{From: "Frontend", Name: "itemMap", Params: []string{""}}
-		encoder := json.NewEncoder(conn)
-		encoder.Encode(x)
-		//Decoding and recieving message
-		decoder := json.NewDecoder(conn)
-		var id []Items
-		derr := decoder.Decode(&id)
-		if derr != nil {
-			fmt.Println("Decoding error")
-			os.Exit(1)
-		}
-		//HTML
-		ctx.HTML("<p>List of items</p>")
-		ctx.HTML("<form action='/add' method='post'><input type='text' name='item' placeholder='Name of item'><input type='text' name='desc' placeholder='Description of item'>")
-		ctx.HTML("<input type='submit' value='Add'></form>")
-		//Displaying the items
-		for _, i := range id {
-			key := i.Name
-			val := i.Desc
-			ctx.HTML("<form method='post'><input type='text' name='oriItem' style='display:none;' readonly value=" + key + "><input type='text' name='item' value=" + key + "><input type='text' name='desc' value=" + val + ">")
-			ctx.HTML("<input type='submit' formaction='/edit' value='Edit'><input type='submit' formaction='/delete' value='Delete'></form>")
-			//ctx.WriteString("<pre>Item: " + key + "	Description: " + val + "	<a href='/edit/{" + key + "}/{" + val + "}'>Edit</a>	<a href='/delete/{" + key + "}'>Delete</a></pre>")
-		}
-	})
+	http.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("../static/"))))
+	http.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("../static/"))))
 
-	// Method:   POST
-	// Resource: http://localhost:8080/add
-	app.Post("/add", func(ctx iris.Context) {
-		form := ctx.FormValues()                                                                        //Reading form values
-		x := Request{From: "Frontend", Name: "add", Params: []string{form["item"][0], form["desc"][0]}} //Making instruction
-		result := request(leaderAddr, x)                                                                //Calling backend
-		fmt.Println(x)
-		if result == 1 {
-			ctx.HTML("<p>Add Complete<p>")
-		} else {
-			ctx.HTML("<p>Add Failed. Item name exist or item name empty<p>")
-		}
-		ctx.HTML("<a href='/'>Return to main page<a>")
-
-	})
-
-	// Method:   Post
-	// Resource: http://localhost:8080/edit
-	app.Post("/edit", func(ctx iris.Context) {
-		form := ctx.FormValues()                                                                                               //Reading form values
-		x := Request{From: "Frontend", Name: "update", Params: []string{form["oriItem"][0], form["item"][0], form["desc"][0]}} //Making instruction
-		fmt.Println(x)
-		result := request(leaderAddr, x) //Calling backend
-		if result == 1 {
-			ctx.HTML("<p>Edit Complete<p>")
-		} else {
-			ctx.HTML("<p>Edit Failed. Item name exist or item name empty<p>")
-		}
-		ctx.HTML("<a href='/'>Return to main page<a>")
-	})
-
-	// Method:   POST
-	// Resource: http://localhost:8080/delete
-	app.Post("/delete", func(ctx iris.Context) {
-		form := ctx.FormValues()
-		x := Request{From: "Frontend", Name: "delete", Params: []string{form["item"][0]}}
-		result := request(leaderAddr, x)
-		if result == 1 {
-			ctx.HTML("<p>Delete Complete<p>")
-		} else {
-			ctx.HTML("<p>Delete Failed.<p>")
-		}
-		ctx.HTML("<a href='/'>Return to main page<a>")
-	})
-	app.Run(iris.Addr(*listenPtr))
+	log.Fatal(http.ListenAndServe(*listenPtr, nil))
 }
