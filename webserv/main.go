@@ -4,12 +4,13 @@ import (
 	"encoding/json" // Marshal, unmarshal, encoding, decoding,
 	"flag"          // Cmd line argument parsing
 	"fmt"
-	"log"      // log.Fatal()
-	"net"      // TCP
-	"net/http" // Http request handlers
+	"html/template" // Templates
+	"log"           // log.Fatal()
+	"net"           // TCP
+	"net/http"      // Http request handlers
 	"os"
-	"strings"
-	"time"
+	"strings" // Split
+	"time"    // Sleep, Seconds
 )
 
 // Request obj
@@ -21,26 +22,49 @@ type Request struct {
 	OldKey string `json:"oldkey"`
 }
 
+// For Response Template
+type resTempObj struct {
+	Action  string
+	Success bool
+}
+
+func (obj *resTempObj) setSuccess(x int) {
+	if x == 1 {
+		obj.Success = true
+	} else {
+		obj.Success = false
+	}
+}
+
 // Globals
-var nodeAddrList []string // List of node addresses
-var leaderAddr string     // Address of leader node
+const (
+	aliveTimer int    = 3 // In seconds
+	resTemp    string = "responseTemplate.html"
+	indexTemp  string = "indexTemplate.html"
+)
+
+var (
+	nodeAddrList []string // List of node addresses
+	leaderAddr   string   // Address of leader node
+	templates    = template.Must(template.ParseFiles("../static/"+resTemp, "../static/"+indexTemp))
+)
 
 // msgNode - sends request to given address, returns success/fail
 func msgNode(address string, req Request) int {
-	//Form connection
+	// Form connection
 	conn, err := net.Dial("tcp", address)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "msgNode: Failed to dial:", address)
 		return 0
 	}
 	defer conn.Close()
-	//Encodng and sending message
+	// Encodng and sending message
 	err = json.NewEncoder(conn).Encode(req)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "msgNode: Encoding error, Request Failed:", req.Name)
 		return 0
 	}
-	//Decoding and recieving message
+	// Decoding and recieving message
 	var response int = 0
 	err = json.NewDecoder(conn).Decode(&response)
 	if err != nil {
@@ -56,20 +80,20 @@ func alive() {
 	req := Request{From: "web", Name: "leader"}
 	for {
 		fmt.Println("Leader addr:", leaderAddr)
-		result := msgNode(leaderAddr, req) //Dialing
+		result := msgNode(leaderAddr, req) // Dialing
 		if result != 1 {
-			//Leader fails
+			// Leader fails
 			fmt.Printf("Detected failure on leaderAddr[%q] at [%q]", leaderAddr, time.Now().UTC().String())
-			//Find new leader
+			// Find new leader
 			req2 := Request{From: "web", Name: "leader"}
-			for _, addr := range nodeAddrList { //Loops through backends and asks are you leader
+			for _, addr := range nodeAddrList { // Loops through backends and asks are you leader
 				result := msgNode(addr, req2)
 				if result == 1 {
 					leaderAddr = addr
 				}
 			}
 		}
-		time.Sleep(3 * time.Second) //Dialing once every 3 seconds
+		time.Sleep(time.Duration(aliveTimer) * time.Second) // Dialing once every 3 seconds
 	}
 }
 
@@ -97,15 +121,31 @@ func rootHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	//HTML
-	ctx.HTML("<p>List of items</p>")
-	ctx.HTML("<form action='/add' method='post'><input type='text' name='item' placeholder='Name of item'><input type='text' name='desc' placeholder='Description of item'>")
-	ctx.HTML("<input type='submit' value='Add'></form>")
-	//Displaying the items
-	for key, val := range itemMap {
-		ctx.HTML("<form method='post'><input type='text' name='oriItem' style='display:none;' readonly value=" + key + "><input type='text' name='item' value=" + key + "><input type='text' name='desc' value=" + val + ">")
-		ctx.HTML("<input type='submit' formaction='/edit' value='Edit'><input type='submit' formaction='/delete' value='Delete'></form>")
-		//ctx.WriteString("<pre>Item: " + key + "	Description: " + val + "	<a href='/edit/{" + key + "}/{" + val + "}'>Edit</a>	<a href='/delete/{" + key + "}'>Delete</a></pre>")
+	// Execute template
+	t := struct {
+		Leader  string
+		ItemMap map[string]string
+	}{
+		leaderAddr,
+		itemMap,
+	}
+	err = templates.ExecuteTemplate(w, indexTemp, t)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+}
+
+func renderResponseTemplate(w http.ResponseWriter, action string, result int) {
+	// Creating template obj
+	var t resTempObj
+	t.Action = action
+	t.setSuccess(result)
+	// Execute template
+	err := templates.ExecuteTemplate(w, resTemp, t) //w, file name (not the path), object
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 }
 
@@ -115,12 +155,8 @@ func addHandler(w http.ResponseWriter, r *http.Request) {
 	req := Request{From: "web", Name: "add", Key: r.FormValue("key"), Value: r.FormValue("value")}
 	result := msgNode(leaderAddr, req)
 	fmt.Println(req)
-	if result == 1 {
-		ctx.HTML("<p>Add Complete<p>")
-	} else {
-		ctx.HTML("<p>Add Failed. Item name exist or item name empty<p>")
-	}
-	ctx.HTML("<a href='/'>Return to main page<a>")
+	// Template response
+	renderResponseTemplate(w, "Add", result)
 }
 
 // Method:   POST
@@ -129,12 +165,8 @@ func deleteHandler(w http.ResponseWriter, r *http.Request) {
 	req := Request{From: "web", Name: "delete", Key: r.FormValue("key")}
 	result := msgNode(leaderAddr, req)
 	fmt.Println(req)
-	if result == 1 {
-		ctx.HTML("<p>Delete Complete<p>")
-	} else {
-		ctx.HTML("<p>Delete Failed.<p>")
-	}
-	ctx.HTML("<a href='/'>Return to main page<a>")
+	// Template response
+	renderResponseTemplate(w, "Delete", result)
 }
 
 // Method:   Post
@@ -143,12 +175,8 @@ func updateHandler(w http.ResponseWriter, r *http.Request) {
 	req := Request{From: "web", Name: "update", Key: r.FormValue("key"), Value: r.FormValue("value"), OldKey: r.FormValue("oldkey")}
 	fmt.Println(req)
 	result := msgNode(leaderAddr, req)
-	if result == 1 {
-		ctx.HTML("<p>Edit Complete<p>")
-	} else {
-		ctx.HTML("<p>Edit Failed. Item name exist or item name empty<p>")
-	}
-	ctx.HTML("<a href='/'>Return to main page<a>")
+	// Template response
+	renderResponseTemplate(w, "Update", result)
 }
 
 func main() {
