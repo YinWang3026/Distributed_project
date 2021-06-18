@@ -196,8 +196,6 @@ func main() {
 	http.HandleFunc("/add", addHandler)
 	http.HandleFunc("/update", updateHandler)
 	http.HandleFunc("/delete/", deleteHandler)
-
-	http.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("../static/"))))
 	http.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("../static/"))))
 
 	log.Fatal(http.ListenAndServe(*listenPtr, nil))
