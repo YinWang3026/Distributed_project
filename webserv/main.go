@@ -38,7 +38,7 @@ func (obj *resTempObj) setSuccess(x int) {
 
 // Globals
 const (
-	aliveTimer int    = 3 // In seconds
+	aliveTimer int    = 5 // In seconds
 	resTemp    string = "responseTemplate.html"
 	indexTemp  string = "indexTemplate.html"
 )
@@ -79,11 +79,11 @@ func msgNode(address string, req Request) int {
 func alive() {
 	req := Request{From: "web", Name: "leader"}
 	for {
-		fmt.Println("Leader addr:", leaderAddr)
+		fmt.Println("Leader addr", leaderAddr)
 		result := msgNode(leaderAddr, req) // Dialing
 		if result != 1 {
 			// Leader fails
-			fmt.Printf("Detected failure on leaderAddr[%q] at [%q]", leaderAddr, time.Now().UTC().String())
+			fmt.Printf("Detected failure on leaderAddr [%q] at [%q]\n", leaderAddr, time.Now().UTC().String())
 			// Find new leader
 			req2 := Request{From: "web", Name: "leader"}
 			for _, addr := range nodeAddrList { // Loops through backends and asks are you leader
@@ -195,7 +195,7 @@ func main() {
 	http.HandleFunc("/", rootHandler)
 	http.HandleFunc("/add", addHandler)
 	http.HandleFunc("/update", updateHandler)
-	http.HandleFunc("/delete/", deleteHandler)
+	http.HandleFunc("/delete", deleteHandler)
 	http.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("../static/"))))
 
 	log.Fatal(http.ListenAndServe(*listenPtr, nil))

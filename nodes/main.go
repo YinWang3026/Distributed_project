@@ -46,11 +46,18 @@ type Raft struct {
 }
 
 // Globals
-var itemMapmutex = sync.RWMutex{}     // itemMap mutex
-var raftVoteLock = sync.Mutex{}       // vote mutex
-var itemMap = make(map[string]string) // itemMap
-var raft = Raft{}                     // Raft object
-var nodeAddrList []string             // List of node addresses
+var (
+	itemMapmutex = sync.RWMutex{}          // itemMap mutex
+	raftVoteLock = sync.Mutex{}            // vote mutex
+	itemMap      = make(map[string]string) // itemMap
+	raft         = Raft{}                  // Raft object
+	nodeAddrList []string                  // List of node addresses
+)
+
+const (
+	aliveTimer int = 5 // In seconds
+	debugTimer int = 3
+)
 
 // getRandomInteger - Returns a random integer between specified range
 func getRandomInteger() int {
@@ -132,20 +139,19 @@ func alive() {
 				response := msgNode(addr, req) //Dialing
 				if response == 0 {
 					// Failed
-					fmt.Fprintf(os.Stderr, "Detected failure on %q at %q\n", addr, time.Now().UTC().String())
+					fmt.Fprintf(os.Stderr, "Detected failure on [%q] at [%q]\n", addr, time.Now().UTC().String())
 				} else if response == 2 {
 					// Response requesting current log of commits
 					req := Request{From: "node", Name: "updateLog", Term: raft.Term, CILog: raft.Log}
 					response := msgNode(addr, req) //Dialing
 					if response == 0 {
 						// Failed
-						fmt.Fprintf(os.Stderr, "Detected failure on %q at %q\n", addr, time.Now().UTC().String())
+						fmt.Fprintf(os.Stderr, "Detected failure on [%q] at [%q]\n", addr, time.Now().UTC().String())
 					}
 				}
-				time.Sleep(1 * time.Second) // Pause 1 second on making each call
 			}
 		}
-		time.Sleep(5 * time.Second) // Checking backends every 5 seconds
+		time.Sleep(time.Duration(aliveTimer) * time.Second) // Checking backends every 5 seconds
 	}
 }
 
@@ -155,7 +161,7 @@ func raftTimer() {
 		//Countdown in seconds
 		for raft.Time != 0 {
 			raft.Time = raft.Time - 1
-			time.Sleep(1 * time.Second)
+			time.Sleep(time.Second) // Sleep for a second
 		}
 		//If not leader, on time expiration become Candidate or remain Candidate
 		if raft.State == "follower" {
@@ -187,9 +193,9 @@ func raftTimer() {
 // checkingLeader - A thread function, for debugging purposes
 func checkingLeader() {
 	for {
-		fmt.Println("I am", raft.State, "Time:", raft.Time, "Election Term:", raft.Term)
+		fmt.Printf("I am [%q] Time [%d] Term [%d]\n", raft.State, raft.Time, raft.Term)
 		fmt.Println(itemMap)
-		time.Sleep(1 * time.Second)
+		time.Sleep(time.Duration(debugTimer) * time.Second)
 	}
 }
 
